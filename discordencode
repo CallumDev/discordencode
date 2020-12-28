@@ -1,0 +1,114 @@
+#!/bin/bash
+# discordencode - encodes a video file to under 8MiB for Discord
+# The MIT License (MIT)
+# Copyright (c) discordencode contributors
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+usage () {
+    echo "Usage: discordencode [options] input output.mp4"
+    echo "Options:"
+    echo "-a  --audio:      Enable audio (96kb aac)"
+    echo "-b  --audio-bits: Audio bitrate (in kb/s)"
+    echo "-p  --preset:     x264 encoding preset (default veryslow)"
+}
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in              
+    -a|--audio)
+    USEAUDIO=1
+    shift #past argument
+    ;;
+    -b|--audio-bits)
+    USEAUDIO=1
+    AUDIO_INBITS="$2"
+    shift #past argument
+    shift #past value
+    ;;
+    -p|--preset)
+    VPRESET="$2"
+    shift #past argument
+    shift #past value
+    ;;
+    *)
+    POSITIONAL+=("$1")
+    shift
+    ;;
+esac
+done
+set -- "${POSITIONAL[@]}"
+
+if [ -z "$1" ]
+ then
+    usage
+    exit 1
+fi
+if [ -z "$2" ]
+ then
+   usage
+   exit 1
+fi
+if [ ! -f "$1" ]; then
+    echo "$1 does not exist"
+    exit 2
+fi
+# Bitrate math functions
+# Bc and ffprobe are a bit arcane
+duration_seconds () {
+    ffprobe -i "$1" -show_entries format=duration -v quiet -of csv="p=0"
+}
+
+subtract_and_truncate () {
+    echo "x = $1; scale = 0; x / 1 - $2" | bc -l
+}
+
+divide_floats() {
+    echo "scale=2; $1 / $2" | bc
+}
+
+audioargs="-an"
+audiobits=0
+if [ -z "$AUDIO_INBITS" ]
+then
+    AUDIO_INBITS=96
+fi
+if [[ $USEAUDIO ]] && [ "$USEAUDIO" -eq "1" ]
+then
+    audioargs="-c:a aac -b:a ${AUDIO_INBITS}k"
+    audiobits=$AUDIO_INBITS
+    echo "Using ${AUDIO_INBITS}k aac audio"
+fi
+if [ -z "$VPRESET" ]
+then
+    VPRESET=veryslow
+fi
+duration=$(duration_seconds "$1")
+echo $1
+echo Duration is $duration
+kbits=$(subtract_and_truncate $(divide_floats 60630.8 $duration) $audiobits)
+echo Video bitrate is $kbits kb/s
+# temporary logfile
+TMPDIR=$(mktemp -d)
+PASSLOGFILE="$TMPDIR/ffmpeg2pass"
+set -x
+ffmpeg -y -i "$1" -c:v libx264 -passlogfile $PASSLOGFILE -preset $VPRESET -threads 0 -b:v ${kbits}k -pass 1 -an -f mp4 /dev/null
+ffmpeg -i "$1" -c:v libx264 -passlogfile $PASSLOGFILE -preset $VPRESET -threads 0 -b:v ${kbits}k -pass 2 $audioargs "$2"
+{ set +x; } 2>/dev/null
+# clean tmp
+rm -rf "$TMPDIR"
